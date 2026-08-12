@@ -1,0 +1,14 @@
+{
+  "name": "n8n-render-community",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.19 <25"
+  },
+  "scripts": {
+    "start": "n8n start"
+  },
+  "dependencies": {
+    "n8n": "latest"
+  }
+}
