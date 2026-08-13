@@ -13,9 +13,20 @@ const N8N_API_KEY = process.env.N8N_API_KEY || '';
 const N8N_TIMEOUT_MS = Number(process.env.N8N_TIMEOUT_MS || 15000);
 const N8N_RETRY_ATTEMPTS = Number(process.env.N8N_RETRY_ATTEMPTS || 5);
 const N8N_RETRY_BASE_MS = Number(process.env.N8N_RETRY_BASE_MS || 750);
+const ENGLISH_LEARNING_SYNC_PATH = process.env.ENGLISH_LEARNING_SYNC_PATH || '/webhook/english-learning-sync';
 const MCP_SESSION_MODE = String(process.env.MCP_SESSION_MODE || 'stateless').toLowerCase();
 const MCP_STATEFUL = MCP_SESSION_MODE === 'stateful';
 const MCP_SESSION_TTL_MS = Number(process.env.MCP_SESSION_TTL_MS || 30 * 60 * 1000);
+
+const TOOL_NAMES = [
+  'list_workflows',
+  'get_workflow',
+  'create_workflow',
+  'update_workflow',
+  'activate_workflow',
+  'deactivate_workflow',
+  'execute_english_learning_sync'
+];
 
 const sessions = new Map();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -89,8 +100,63 @@ async function n8n(path, options = {}) {
   throw lastError || new Error('Unknown n8n request failure');
 }
 
+async function n8nWebhook(path, payload = {}) {
+  if (!N8N_URL) {
+    throw new Error('N8N_URL must be configured');
+  }
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), N8N_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${N8N_URL}${normalizedPath}`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain;q=0.9, */*;q=0.8'
+      },
+      body: JSON.stringify(payload ?? {})
+    });
+
+    const text = await response.text();
+    let body;
+
+    if (!text) {
+      body = {};
+    } else {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = {
+          raw: text,
+          contentType: response.headers.get('content-type') || null,
+          validJson: false
+        };
+      }
+    }
+
+    if (!response.ok) {
+      const error = new Error(`n8n webhook ${response.status}: ${text || response.statusText}`);
+      error.status = response.status;
+      error.responseBody = body;
+      throw error;
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      validJson: body?.validJson !== false,
+      body
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function createServer() {
-  const server = new McpServer({ name: 'n8n-mcp', version: '1.2.0' });
+  const server = new McpServer({ name: 'n8n-mcp', version: '1.3.0' });
 
   server.tool('list_workflows', 'List workflows from n8n', {}, async () => {
     const data = await n8n('/workflows');
@@ -121,6 +187,18 @@ function createServer() {
     const data = await n8n(`/workflows/${encodeURIComponent(id)}/deactivate`, { method: 'POST' });
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   });
+
+  server.tool(
+    'execute_english_learning_sync',
+    'Execute the English Learning Sync production webhook in n8n with the supplied learning-session payload.',
+    {
+      payload: z.record(z.any()).optional().describe('JSON payload sent to the English Learning Sync webhook. Use an empty object only for connectivity tests.')
+    },
+    async ({ payload = {} }) => {
+      const data = await n8nWebhook(ENGLISH_LEARNING_SYNC_PATH, payload);
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    }
+  );
 
   return server;
 }
@@ -249,8 +327,9 @@ app.get('/health', (_req, res) => {
     ok: true,
     service: 'n8n-mcp',
     mode: MCP_STATEFUL ? 'stateful' : 'stateless',
-    version: '1.2.0',
-    sessions: MCP_STATEFUL ? sessions.size : 0
+    version: '1.3.0',
+    sessions: MCP_STATEFUL ? sessions.size : 0,
+    tools: TOOL_NAMES
   });
 });
 
@@ -265,7 +344,8 @@ app.get('/ready', async (_req, res) => {
       ok: true,
       service: 'n8n-mcp',
       n8n: 'reachable',
-      mode: MCP_STATEFUL ? 'stateful' : 'stateless'
+      mode: MCP_STATEFUL ? 'stateful' : 'stateless',
+      toolCount: TOOL_NAMES.length
     });
   } catch (error) {
     return res.status(503).json({
@@ -304,6 +384,7 @@ cleanupTimer.unref();
 const port = Number(process.env.PORT || 10000);
 const httpServer = app.listen(port, '0.0.0.0', () => {
   console.log(`n8n MCP listening on ${port} in ${MCP_STATEFUL ? 'stateful' : 'stateless'} mode`);
+  console.log(`MCP tools: ${TOOL_NAMES.join(', ')}`);
 });
 
 async function shutdown(signal) {
