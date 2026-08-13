@@ -1,32 +1,89 @@
 import express from 'express';
-import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 const N8N_URL = (process.env.N8N_URL || '').replace(/\/$/, '');
 const N8N_API_KEY = process.env.N8N_API_KEY || '';
+const N8N_TIMEOUT_MS = Number(process.env.N8N_TIMEOUT_MS || 15000);
+const N8N_RETRY_ATTEMPTS = Number(process.env.N8N_RETRY_ATTEMPTS || 5);
+const N8N_RETRY_BASE_MS = Number(process.env.N8N_RETRY_BASE_MS || 750);
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function retryableMethod(method, path) {
+  const normalized = String(method || 'GET').toUpperCase();
+  if (['GET', 'HEAD', 'PUT', 'DELETE'].includes(normalized)) return true;
+  if (normalized === 'POST' && /\/(activate|deactivate)$/.test(path)) return true;
+  return false;
+}
+
+function retryableStatus(status) {
+  return [429, 502, 503, 504].includes(status);
+}
 
 async function n8n(path, options = {}) {
-  if (!N8N_URL || !N8N_API_KEY) throw new Error('N8N_URL and N8N_API_KEY must be configured');
-  const response = await fetch(`${N8N_URL}/api/v1${path}`, {
-    ...options,
-    headers: {
-      'X-N8N-API-KEY': N8N_API_KEY,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
+  if (!N8N_URL || !N8N_API_KEY) {
+    throw new Error('N8N_URL and N8N_API_KEY must be configured');
+  }
+
+  const method = String(options.method || 'GET').toUpperCase();
+  const attempts = retryableMethod(method, path) ? Math.max(1, N8N_RETRY_ATTEMPTS) : 1;
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), N8N_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${N8N_URL}/api/v1${path}`, {
+        ...options,
+        method,
+        signal: controller.signal,
+        headers: {
+          'X-N8N-API-KEY': N8N_API_KEY,
+          'Content-Type': 'application/json',
+          ...(options.headers || {})
+        }
+      });
+
+      const text = await response.text();
+
+      if (response.ok) {
+        return text ? JSON.parse(text) : {};
+      }
+
+      const error = new Error(`n8n ${response.status}: ${text}`);
+      error.status = response.status;
+      lastError = error;
+
+      if (attempt >= attempts || !retryableStatus(response.status)) {
+        throw error;
+      }
+    } catch (error) {
+      lastError = error;
+      const networkFailure = error?.name === 'AbortError' || error instanceof TypeError;
+      const statusFailure = retryableStatus(error?.status);
+
+      if (attempt >= attempts || (!networkFailure && !statusFailure)) {
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeout);
     }
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`n8n ${response.status}: ${text}`);
-  return text ? JSON.parse(text) : {};
+
+    const delay = Math.min(N8N_RETRY_BASE_MS * (2 ** (attempt - 1)), 8000);
+    await sleep(delay);
+  }
+
+  throw lastError || new Error('Unknown n8n request failure');
 }
 
 function createServer() {
-  const server = new McpServer({ name: 'n8n-mcp', version: '1.0.0' });
+  const server = new McpServer({ name: 'n8n-mcp', version: '1.1.0' });
 
   server.tool('list_workflows', 'List workflows from n8n', {}, async () => {
     const data = await n8n('/workflows');
@@ -61,42 +118,72 @@ function createServer() {
   return server;
 }
 
-const transports = {};
 app.post('/mcp', async (req, res) => {
+  const server = createServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined
+  });
+
+  res.on('close', () => {
+    Promise.resolve(transport.close()).catch(() => {});
+    Promise.resolve(server.close()).catch(() => {});
+  });
+
   try {
-    const sessionId = req.headers['mcp-session-id'];
-    let transport = sessionId ? transports[sessionId] : undefined;
-    if (!transport) {
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: id => { transports[id] = transport; }
-      });
-      transport.onclose = () => {
-        if (transport.sessionId) delete transports[transport.sessionId];
-      };
-      const server = createServer();
-      await server.connect(transport);
-    }
+    await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (error) {
-    console.error(error);
-    if (!res.headersSent) res.status(500).json({ error: String(error.message || error) });
+    console.error('MCP request failed:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32603, message: String(error?.message || error) },
+        id: req.body?.id ?? null
+      });
+    }
   }
 });
 
-app.get('/mcp', async (req, res) => {
-  const transport = transports[req.headers['mcp-session-id']];
-  if (!transport) return res.status(400).send('Missing or invalid MCP session');
-  await transport.handleRequest(req, res);
+app.get('/mcp', (_req, res) => {
+  res.status(405).set('Allow', 'POST').json({
+    error: 'This MCP endpoint is stateless. Use POST /mcp.'
+  });
 });
 
-app.delete('/mcp', async (req, res) => {
-  const transport = transports[req.headers['mcp-session-id']];
-  if (!transport) return res.status(400).send('Missing or invalid MCP session');
-  await transport.handleRequest(req, res);
+app.delete('/mcp', (_req, res) => {
+  res.status(405).set('Allow', 'POST').json({
+    error: 'This MCP endpoint is stateless and has no server-side session to delete.'
+  });
 });
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'n8n-mcp' }));
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'n8n-mcp', mode: 'stateless', version: '1.1.0' });
+});
+
+app.get('/ready', async (_req, res) => {
+  if (!N8N_URL || !N8N_API_KEY) {
+    return res.status(503).json({ ok: false, service: 'n8n-mcp', n8n: 'not_configured' });
+  }
+
+  try {
+    await n8n('/workflows?limit=1');
+    return res.json({ ok: true, service: 'n8n-mcp', n8n: 'reachable' });
+  } catch (error) {
+    return res.status(503).json({
+      ok: false,
+      service: 'n8n-mcp',
+      n8n: 'unreachable',
+      error: String(error?.message || error)
+    });
+  }
+});
+
+app.use((error, _req, res, next) => {
+  if (error instanceof SyntaxError && 'body' in error) {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
+  return next(error);
+});
 
 const port = Number(process.env.PORT || 10000);
-app.listen(port, '0.0.0.0', () => console.log(`n8n MCP listening on ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`n8n MCP listening on ${port} in stateless mode`));
