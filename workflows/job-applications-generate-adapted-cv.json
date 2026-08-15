@@ -1,0 +1,114 @@
+{
+  "name": "Job Applications — Generate Adapted CV (AI)",
+  "active": false,
+  "settings": {
+    "timezone": "America/Guatemala",
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "When Called after Match",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "job_json"
+            },
+            {
+              "name": "profile"
+            },
+            {
+              "name": "master_file_id"
+            },
+            {
+              "name": "notion_page_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prompt",
+      "name": "Build Truthful Adaptation Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const job=typeof $json.job_json==='string'?JSON.parse($json.job_json):$json.job_json;const facts={yearsExperience:'12+ years',roles:['Full Stack Developer','Technical Lead'],coreStack:['Java','Spring Boot','Angular','TypeScript','Node.js','SQL','Docker','Azure DevOps','AWS'],languages:'Spanish native; English A2/B1-compatible'};const isEs=(job.language||'EN').toUpperCase()==='ES';const instruction=isEs?'Responde solo JSON válido con TARGET_HEADLINE, SUMMARY y COVER_LETTER. Usa únicamente los hechos listados; no inventes experiencia.':'Return only valid JSON with TARGET_HEADLINE, SUMMARY and COVER_LETTER. Use only the listed facts; do not invent experience.';return [{json:{job,profile:$json.profile,masterFileId:$json.master_file_id,notionPageId:$json.notion_page_id,prompt:instruction+'\\nFACTS:'+JSON.stringify(facts)+'\\nVACANCY:'+JSON.stringify(job)}}];"
+      }
+    },
+    {
+      "id": "ai",
+      "name": "Generar contenido de CV",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.prompt }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "KbXLMMu97DOiPUih",
+          "name": "OpenAi account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Called after Match": {
+      "main": [
+        [
+          {
+            "node": "Build Truthful Adaptation Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Truthful Adaptation Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generar contenido de CV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": ""
+}
