@@ -9,10 +9,7 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
 
 const N8N_URL = (process.env.N8N_URL || '').replace(/\/$/, '');
-const N8N_INTERNAL_URL = (process.env.N8N_INTERNAL_URL || '').replace(/\/$/, '');
 const N8N_API_KEY = process.env.N8N_API_KEY || '';
-const CV_OPENAI_CREDENTIAL_ID = process.env.CV_OPENAI_CREDENTIAL_ID || '';
-const CV_OPENAI_CREDENTIAL_NAME = process.env.CV_OPENAI_CREDENTIAL_NAME || 'OpenAi account';
 const N8N_TIMEOUT_MS = Number(process.env.N8N_TIMEOUT_MS || 15000);
 const N8N_RETRY_ATTEMPTS = Number(process.env.N8N_RETRY_ATTEMPTS || 5);
 const N8N_RETRY_BASE_MS = Number(process.env.N8N_RETRY_BASE_MS || 750);
@@ -28,8 +25,7 @@ const TOOL_NAMES = [
   'update_workflow',
   'activate_workflow',
   'deactivate_workflow',
-  'execute_english_learning_sync',
-  'install_cv_generator'
+  'execute_english_learning_sync'
 ];
 
 const sessions = new Map();
@@ -47,9 +43,8 @@ function retryableStatus(status) {
 }
 
 async function n8n(path, options = {}) {
-  const baseUrl = N8N_INTERNAL_URL || N8N_URL;
-  if (!baseUrl || !N8N_API_KEY) {
-    throw new Error('N8N_URL or N8N_INTERNAL_URL, plus N8N_API_KEY, must be configured');
+  if (!N8N_URL || !N8N_API_KEY) {
+    throw new Error('N8N_URL and N8N_API_KEY must be configured');
   }
 
   const method = String(options.method || 'GET').toUpperCase();
@@ -61,7 +56,7 @@ async function n8n(path, options = {}) {
     const timeout = setTimeout(() => controller.abort(), N8N_TIMEOUT_MS);
 
     try {
-      const response = await fetch(`${baseUrl}/api/v1${path}`, {
+      const response = await fetch(`${N8N_URL}/api/v1${path}`, {
         ...options,
         method,
         signal: controller.signal,
@@ -160,23 +155,6 @@ async function n8nWebhook(path, payload = {}) {
   }
 }
 
-function buildCvGeneratorWorkflow() {
-  if (!CV_OPENAI_CREDENTIAL_ID) {
-    throw new Error('CV_OPENAI_CREDENTIAL_ID must be configured');
-  }
-
-  return {
-    name: 'Job Applications — Generate Adapted CV',
-    settings: { timezone: 'America/Guatemala', executionOrder: 'v1', callerPolicy: 'workflowsFromSameOwner', availableInMCP: false },
-    nodes: [
-      { id: 'trigger', name: 'When Called after Match', type: 'n8n-nodes-base.executeWorkflowTrigger', typeVersion: 1.1, position: [0, 0], parameters: { workflowInputs: { values: [{ name: 'job_json' }, { name: 'profile' }, { name: 'master_file_id' }, { name: 'notion_page_id' }] } } },
-      { id: 'prompt', name: 'Build Truthful Adaptation Prompt', type: 'n8n-nodes-base.code', typeVersion: 2, position: [240, 0], parameters: { jsCode: "const job=typeof $json.job_json==='string'?JSON.parse($json.job_json):$json.job_json;const facts={yearsExperience:'12+ years',roles:['Full Stack Developer','Technical Lead'],coreStack:['Java','Spring Boot','Angular','TypeScript','Node.js','SQL','Docker','Azure DevOps','AWS'],languages:'Spanish native; English A2/B1-compatible'};const isEs=(job.language||'EN').toUpperCase()==='ES';const instruction=isEs?'Responde solo JSON válido con TARGET_HEADLINE, SUMMARY y COVER_LETTER. Usa únicamente los hechos listados; no inventes experiencia.':'Return only valid JSON with TARGET_HEADLINE, SUMMARY and COVER_LETTER. Use only the listed facts; do not invent experience.';return [{json:{job,profile:$json.profile,masterFileId:$json.master_file_id,notionPageId:$json.notion_page_id,prompt:instruction+'\\nFACTS:'+JSON.stringify(facts)+'\\nVACANCY:'+JSON.stringify(job)}}];" } },
-      { id: 'ai', name: 'Generar contenido de CV', type: '@n8n/n8n-nodes-langchain.openAi', typeVersion: 1.8, position: [500, 0], parameters: { resource: 'text', operation: 'message', modelId: { __rl: true, value: 'gpt-4.1-mini', mode: 'list', cachedResultName: 'gpt-4.1-mini' }, messages: { values: [{ content: '={{ $json.prompt }}', role: 'user' }] }, options: {} }, credentials: { openAiApi: { id: CV_OPENAI_CREDENTIAL_ID, name: CV_OPENAI_CREDENTIAL_NAME } } }
-    ],
-    connections: { 'When Called after Match': { main: [[{ node: 'Build Truthful Adaptation Prompt', type: 'main', index: 0 }]] }, 'Build Truthful Adaptation Prompt': { main: [[{ node: 'Generar contenido de CV', type: 'main', index: 0 }]] } }
-  };
-}
-
 function createServer() {
   const server = new McpServer({ name: 'n8n-mcp', version: '1.3.0' });
 
@@ -209,16 +187,6 @@ function createServer() {
     const data = await n8n(`/workflows/${encodeURIComponent(id)}/deactivate`, { method: 'POST' });
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
   });
-
-  server.tool(
-    'install_cv_generator',
-    'Install the approved CV-generation workflow through Render private networking. The workflow remains inactive.',
-    { workflowId: z.string().default('52LShY087l1fwfSa') },
-    async ({ workflowId }) => {
-      const data = await n8n(`/workflows/${encodeURIComponent(workflowId)}`, { method: 'PUT', body: JSON.stringify(buildCvGeneratorWorkflow()) });
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, workflowId: data.id, active: data.active, nodeCount: data.nodes?.length || 0 }, null, 2) }] };
-    }
-  );
 
   server.tool(
     'execute_english_learning_sync',
@@ -366,7 +334,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/ready', async (_req, res) => {
-  if (!(N8N_INTERNAL_URL || N8N_URL) || !N8N_API_KEY) {
+  if (!N8N_URL || !N8N_API_KEY) {
     return res.status(503).json({ ok: false, service: 'n8n-mcp', n8n: 'not_configured' });
   }
 
