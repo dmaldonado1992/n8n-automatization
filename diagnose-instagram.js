@@ -10,14 +10,16 @@ async function n8n(path){
   return t?JSON.parse(t):{};
 }
 
-function safe(obj,depth=0){
+function safe(obj,depth=0,seen=new WeakSet()){
   if(depth>6) return '[DEPTH_LIMIT]';
   if(obj==null||typeof obj!=='object') return obj;
-  if(Array.isArray(obj)) return obj.slice(0,20).map(v=>safe(v,depth+1));
+  if(seen.has(obj)) return '[CIRCULAR]';
+  seen.add(obj);
+  if(Array.isArray(obj)) return obj.slice(0,20).map(v=>safe(v,depth+1,seen));
   const out={};
   for(const [k,v] of Object.entries(obj)){
     if(/token|authorization|cookie|secret|api.?key|credential/i.test(k)){out[k]='[REDACTED]';continue;}
-    out[k]=safe(v,depth+1);
+    out[k]=safe(v,depth+1,seen);
   }
   return out;
 }
@@ -55,6 +57,47 @@ function latestDeliverySummary(execution){
   };
 }
 
+function webhookSummary(execution){
+  const runData=execution?.data?.resultData?.runData||{};
+  const web=runData['Instagram Incoming Message']?.[0]?.data?.main?.[0]?.[0]?.json||{};
+  const body=web.body||{};
+  const entries=Array.isArray(body.entry)?body.entry:[];
+  const events=[];
+  for(const entry of entries){
+    for(const m of (entry.messaging||[])){
+      events.push({
+        envelope:'messaging',entryId:String(entry.id||''),
+        sender:String(m?.sender?.id||''),recipient:String(m?.recipient?.id||''),
+        isSelf:m?.is_self===true,isEcho:m?.message?.is_echo===true,
+        mid:m?.message?.mid||m?.postback?.mid||null,
+        text:m?.message?.text||null,
+        hasPostback:!!m?.postback
+      });
+    }
+    for(const c of (entry.changes||[])){
+      const v=c?.value||{};
+      events.push({
+        envelope:'changes',entryId:String(entry.id||''),field:c?.field||null,
+        sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),
+        isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,
+        mid:v?.message?.mid||v?.postback?.mid||null,
+        text:v?.message?.text||v?.text||null
+      });
+    }
+  }
+  if(body.field&&body.value){
+    const v=body.value;
+    events.push({
+      envelope:'root',entryId:String(body.id||''),field:body.field,
+      sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),
+      isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,
+      mid:v?.message?.mid||v?.postback?.mid||null,
+      text:v?.message?.text||v?.text||null
+    });
+  }
+  return {id:execution?.id||null,startedAt:execution?.startedAt||null,object:body.object||null,events};
+}
+
 async function main(){
   if(!N8N_URL||!N8N_API_KEY){console.log('[IG_DIAG] skipped: n8n config missing');return;}
   const [wf,verifyWf]=await Promise.all([
@@ -72,6 +115,7 @@ async function main(){
     if(arr.length) console.log('[IG_DIAG] latest_delivery '+JSON.stringify(latestDeliverySummary(arr[0])));
     const attempted=arr.find(e=>deliveryOutput(e).output?.delivery?.attempted===true);
     if(attempted) console.log('[IG_DIAG] latest_attempted_delivery '+JSON.stringify(latestDeliverySummary(attempted)));
+    console.log('[IG_DIAG] recent_webhooks '+JSON.stringify(arr.slice(0,5).map(webhookSummary)));
     console.log('[IG_DIAG] executions '+JSON.stringify(arr.map(e=>({id:e.id,status:e.status,finished:e.finished,startedAt:e.startedAt,stoppedAt:e.stoppedAt,mode:e.mode,waitTill:e.waitTill,data:safe(e.data)}))));
   }catch(e){console.log('[IG_DIAG] executions_error '+e.message);}
 }
