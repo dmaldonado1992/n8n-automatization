@@ -26,11 +26,7 @@ function safe(obj,depth=0,seen=new WeakSet()){
 
 const summarizeWorkflow=wf=>({
   id:wf.id,name:wf.name,active:wf.active,
-  nodes:(wf.nodes||[]).map(n=>({
-    name:n.name,type:n.type,webhookId:n.webhookId||null,
-    path:n.parameters?.path||null,httpMethod:n.parameters?.httpMethod||null,
-    responseMode:n.parameters?.responseMode||null
-  }))
+  nodes:(wf.nodes||[]).map(n=>({name:n.name,type:n.type,webhookId:n.webhookId||null,path:n.parameters?.path||null,httpMethod:n.parameters?.httpMethod||null,responseMode:n.parameters?.responseMode||null}))
 });
 
 function deliveryOutput(execution){
@@ -43,18 +39,11 @@ function deliveryOutput(execution){
 
 function latestDeliverySummary(execution){
   const {engine,output}=deliveryOutput(execution);
-  return {
-    id:execution?.id||null,
-    status:execution?.status||null,
-    finished:execution?.finished??null,
-    startedAt:execution?.startedAt||null,
-    engineStatus:engine?.executionStatus||null,
-    eventType:output?.eventType||null,
-    sender:output?.sender||null,
-    igAccountId:output?.igAccountId||null,
-    reply:typeof output?.reply==='string'?output.reply:null,
-    delivery:safe(output?.delivery??null)
-  };
+  return {id:execution?.id||null,status:execution?.status||null,finished:execution?.finished??null,startedAt:execution?.startedAt||null,engineStatus:engine?.executionStatus||null,eventType:output?.eventType||null,sender:output?.sender||null,igAccountId:output?.igAccountId||null,reply:typeof output?.reply==='string'?output.reply:null,delivery:safe(output?.delivery??null),output:safe(output)};
+}
+
+function attachmentsOf(message){
+  return (message?.attachments||[]).map(a=>({type:a?.type||null,url:a?.payload?.url||null,hasUrl:!!a?.payload?.url,payloadKeys:a?.payload&&typeof a.payload==='object'?Object.keys(a.payload):[]}));
 }
 
 function webhookSummary(execution){
@@ -64,60 +53,46 @@ function webhookSummary(execution){
   const entries=Array.isArray(body.entry)?body.entry:[];
   const events=[];
   for(const entry of entries){
-    for(const m of (entry.messaging||[])){
-      events.push({
-        envelope:'messaging',entryId:String(entry.id||''),
-        sender:String(m?.sender?.id||''),recipient:String(m?.recipient?.id||''),
-        isSelf:m?.is_self===true,isEcho:m?.message?.is_echo===true,
-        mid:m?.message?.mid||m?.postback?.mid||null,
-        text:m?.message?.text||null,
-        hasPostback:!!m?.postback
-      });
-    }
+    for(const m of (entry.messaging||[])) events.push({envelope:'messaging',entryId:String(entry.id||''),sender:String(m?.sender?.id||''),recipient:String(m?.recipient?.id||''),isSelf:m?.is_self===true,isEcho:m?.message?.is_echo===true,mid:m?.message?.mid||m?.postback?.mid||null,text:m?.message?.text||null,attachments:attachmentsOf(m?.message),hasPostback:!!m?.postback});
     for(const c of (entry.changes||[])){
       const v=c?.value||{};
-      events.push({
-        envelope:'changes',entryId:String(entry.id||''),field:c?.field||null,
-        sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),
-        isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,
-        mid:v?.message?.mid||v?.postback?.mid||null,
-        text:v?.message?.text||v?.text||null
-      });
+      events.push({envelope:'changes',entryId:String(entry.id||''),field:c?.field||null,sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,mid:v?.message?.mid||v?.postback?.mid||null,text:v?.message?.text||v?.text||null,attachments:attachmentsOf(v?.message||v)});
     }
   }
   if(body.field&&body.value){
     const v=body.value;
-    events.push({
-      envelope:'root',entryId:String(body.id||''),field:body.field,
-      sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),
-      isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,
-      mid:v?.message?.mid||v?.postback?.mid||null,
-      text:v?.message?.text||v?.text||null
-    });
+    events.push({envelope:'root',entryId:String(body.id||''),field:body.field,sender:String(v?.sender?.id||v?.from?.id||''),recipient:String(v?.recipient?.id||''),isSelf:v?.is_self===true,isEcho:v?.message?.is_echo===true,mid:v?.message?.mid||v?.postback?.mid||null,text:v?.message?.text||v?.text||null,attachments:attachmentsOf(v?.message||v)});
   }
   return {id:execution?.id||null,startedAt:execution?.startedAt||null,object:body.object||null,events};
 }
 
+function codeMatches(wf){
+  const node=(wf.nodes||[]).find(n=>n.name==='Dynamic Notion Sales Engine');
+  const code=node?.parameters?.jsCode||'';
+  const terms=['comprobante','attachment','attachments','imagen','image','foto','payment','receipt'];
+  const out=[];
+  const lower=code.toLowerCase();
+  for(const term of terms){
+    const idx=lower.indexOf(term);
+    if(idx>=0) out.push({term,index:idx,snippet:code.slice(Math.max(0,idx-450),Math.min(code.length,idx+900))});
+  }
+  return out;
+}
+
 async function main(){
   if(!N8N_URL||!N8N_API_KEY){console.log('[IG_DIAG] skipped: n8n config missing');return;}
-  const [wf,verifyWf]=await Promise.all([
-    n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`),
-    n8n(`/workflows/${encodeURIComponent(VERIFY_WORKFLOW_ID)}`)
-  ]);
+  const [wf,verifyWf]=await Promise.all([n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`),n8n(`/workflows/${encodeURIComponent(VERIFY_WORKFLOW_ID)}`)]);
   console.log('[IG_DIAG] workflow '+JSON.stringify(summarizeWorkflow(wf)));
   console.log('[IG_DIAG] verification_workflow '+JSON.stringify(summarizeWorkflow(verifyWf)));
-  const envKeys=Object.keys(process.env).filter(k=>/(META|INSTAGRAM|IG_)/i.test(k)).sort();
-  console.log('[IG_DIAG] env_keys '+JSON.stringify(envKeys));
+  console.log('[IG_DIAG] payment_code_matches '+JSON.stringify(codeMatches(wf)));
   try{
-    const ex=await n8n(`/executions?workflowId=${encodeURIComponent(WORKFLOW_ID)}&limit=15&includeData=true`);
+    const ex=await n8n(`/executions?workflowId=${encodeURIComponent(WORKFLOW_ID)}&limit=25&includeData=true`);
     const rows=ex.data||ex.results||ex;
     const arr=Array.isArray(rows)?rows:[];
     if(arr.length) console.log('[IG_DIAG] latest_delivery '+JSON.stringify(latestDeliverySummary(arr[0])));
     const attempted=arr.find(e=>deliveryOutput(e).output?.delivery?.attempted===true);
     if(attempted) console.log('[IG_DIAG] latest_attempted_delivery '+JSON.stringify(latestDeliverySummary(attempted)));
-    console.log('[IG_DIAG] recent_webhooks '+JSON.stringify(arr.slice(0,5).map(webhookSummary)));
-    console.log('[IG_DIAG] executions '+JSON.stringify(arr.map(e=>({id:e.id,status:e.status,finished:e.finished,startedAt:e.startedAt,stoppedAt:e.stoppedAt,mode:e.mode,waitTill:e.waitTill,data:safe(e.data)}))));
+    console.log('[IG_DIAG] recent_webhooks '+JSON.stringify(arr.slice(0,10).map(webhookSummary)));
   }catch(e){console.log('[IG_DIAG] executions_error '+e.message);}
 }
 main().catch(e=>{console.error('[IG_DIAG] failed: '+e.message);});
-// refresh diagnostic
