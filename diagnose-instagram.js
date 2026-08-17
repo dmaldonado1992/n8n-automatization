@@ -1,6 +1,7 @@
 const N8N_URL=(process.env.N8N_URL||'').replace(/\/$/,'');
 const N8N_API_KEY=process.env.N8N_API_KEY||'';
 const WORKFLOW_ID=process.env.INSTAGRAM_SALES_WORKFLOW_ID||'6l5IbTxGdwcL24wT';
+const VERIFY_WORKFLOW_ID=process.env.INSTAGRAM_VERIFY_WORKFLOW_ID||'PnM3CU0JZ26urysi';
 
 async function n8n(path){
   const r=await fetch(`${N8N_URL}/api/v1${path}`,{headers:{'X-N8N-API-KEY':N8N_API_KEY,'Accept':'application/json'}});
@@ -21,10 +22,23 @@ function safe(obj,depth=0){
   return out;
 }
 
+const summarizeWorkflow=wf=>({
+  id:wf.id,name:wf.name,active:wf.active,
+  nodes:(wf.nodes||[]).map(n=>({
+    name:n.name,type:n.type,webhookId:n.webhookId||null,
+    path:n.parameters?.path||null,httpMethod:n.parameters?.httpMethod||null,
+    responseMode:n.parameters?.responseMode||null
+  }))
+});
+
 async function main(){
   if(!N8N_URL||!N8N_API_KEY){console.log('[IG_DIAG] skipped: n8n config missing');return;}
-  const wf=await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`);
-  console.log('[IG_DIAG] workflow '+JSON.stringify({id:wf.id,name:wf.name,active:wf.active,nodes:(wf.nodes||[]).map(n=>({name:n.name,type:n.type,webhookId:n.webhookId||null,path:n.parameters?.path||null,httpMethod:n.parameters?.httpMethod||null,responseMode:n.parameters?.responseMode||null}))}));
+  const [wf,verifyWf]=await Promise.all([
+    n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`),
+    n8n(`/workflows/${encodeURIComponent(VERIFY_WORKFLOW_ID)}`)
+  ]);
+  console.log('[IG_DIAG] workflow '+JSON.stringify(summarizeWorkflow(wf)));
+  console.log('[IG_DIAG] verification_workflow '+JSON.stringify(summarizeWorkflow(verifyWf)));
   const envKeys=Object.keys(process.env).filter(k=>/(META|INSTAGRAM|IG_)/i.test(k)).sort();
   console.log('[IG_DIAG] env_keys '+JSON.stringify(envKeys));
   try{
