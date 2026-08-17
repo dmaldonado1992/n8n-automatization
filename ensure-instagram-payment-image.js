@@ -31,20 +31,22 @@ async function main(){
   let code=node.parameters.jsCode;
   if(code.includes(MARKER)){console.log('[IG_PAYMENT_IMAGE] handler already installed');return;}
 
-  const oldExtract="const lower=text.toLowerCase();\\nconst image=(event.message?.attachments||[]).find(a=>a.type==='image')?.payload?.url||null;\\nconst now=new Date().toISOString();";
-  const newExtract=`const lower=text.toLowerCase();\n${MARKER}\nconst attachments=Array.isArray(event.message?.attachments)?event.message.attachments:[];\nconst imageAttachment=attachments.find(a=>String(a?.type||'').toLowerCase()==='image'&&a?.payload?.url);\nconst image=imageAttachment?.payload?.url||null;\nconst ephemeralAttachment=attachments.find(a=>String(a?.type||'').toLowerCase()==='ephemeral')||null;\nconst hasEphemeral=!!ephemeralAttachment;\nconst now=new Date().toISOString();`;
-  if(!code.includes(oldExtract)) throw new Error('payment attachment extractor source not found');
-  code=code.replace(oldExtract,newExtract);
+  const imageNeedle="const image=(event.message?.attachments||[]).find(a=>a.type==='image')?.payload?.url||null;";
+  const imageIdx=code.indexOf(imageNeedle);
+  if(imageIdx<0) throw new Error('payment attachment extractor source not found');
+  const imageReplacement=`${MARKER}\nconst attachments=Array.isArray(event.message?.attachments)?event.message.attachments:[];\nconst imageAttachment=attachments.find(a=>String(a?.type||'').toLowerCase()==='image'&&a?.payload?.url);\nconst image=imageAttachment?.payload?.url||null;\nconst ephemeralAttachment=attachments.find(a=>String(a?.type||'').toLowerCase()==='ephemeral')||null;\nconst hasEphemeral=!!ephemeralAttachment;`;
+  code=code.slice(0,imageIdx)+imageReplacement+code.slice(imageIdx+imageNeedle.length);
 
   const oldLog="log('EVENT_SELECTED',{eventType,sender,igAccountId,text,hasImage:!!image,rawEvent:event});";
   const newLog="log('EVENT_SELECTED',{eventType,sender,igAccountId,text,hasImage:!!image,hasEphemeral,attachmentTypes:attachments.map(a=>a?.type||null),rawEvent:event});";
-  if(!code.includes(oldLog)) throw new Error('EVENT_SELECTED logger source not found');
-  code=code.replace(oldLog,newLog);
+  if(code.includes(oldLog)) code=code.replace(oldLog,newLog);
 
-  const oldValidation="const valid=current.expected==='imagen'?!!image:current.expected==='telefono'?/^\\\\+?[0-9 ()-]{7,20}$/.test(text):current.expected==='numero'?/^\\\\d+(\\\\.\\\\d+)?$/.test(text):!!text;\\n    if(!valid){\\n      reply='Necesito recibir '+(current.expected==='imagen'?'una imagen':current.expected==='telefono'?'un teléfono válido':'el dato solicitado')+'. '+current.message;\\n    }else{";
-  const newValidation=`const valid=current.expected==='imagen'?!!image:current.expected==='telefono'?/^\\+?[0-9 ()-]{7,20}$/.test(text):current.expected==='numero'?/^\\d+(\\.\\d+)?$/.test(text):!!text;\n    if(current.expected==='imagen'&&hasEphemeral){\n      reply='Recibí la foto, pero Instagram la envió como temporal y no me permite guardar el comprobante. Reenvíala como foto normal desde la galería (no como “Ver una vez” o foto temporal).';\n    }else if(!valid){\n      reply='Necesito recibir '+(current.expected==='imagen'?'una imagen':current.expected==='telefono'?'un teléfono válido':'el dato solicitado')+'. '+current.message;\n    }else{`;
-  if(!code.includes(oldValidation)) throw new Error('payment validation source not found');
-  code=code.replace(oldValidation,newValidation);
+  const validIdx=code.indexOf("const valid=current.expected==='imagen'?!!image:");
+  if(validIdx<0) throw new Error('payment validation source not found');
+  const ifIdx=code.indexOf('if(!valid){',validIdx);
+  if(ifIdx<0) throw new Error('payment invalid branch not found');
+  const branch="if(current.expected==='imagen'&&hasEphemeral){\n      reply='Recibí la foto, pero Instagram la envió como temporal y no me permite guardar el comprobante. Reenvíala como foto normal desde la galería (no como “Ver una vez” o foto temporal).';\n    }else if(!valid){";
+  code=code.slice(0,ifIdx)+branch+code.slice(ifIdx+'if(!valid){'.length);
 
   node.parameters.jsCode=code;
   await saveAndActivate(wf);
