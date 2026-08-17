@@ -34,13 +34,12 @@ async function main() {
     return;
   }
 
-  const metaStart = code.indexOf('const metaHeaders=');
-  const sendStart = code.indexOf('const sendMeta=', Math.max(0, metaStart));
+  const sendStart = code.indexOf('const sendMeta=');
   const arrowAt = sendStart >= 0 ? code.indexOf('=>', sendStart) : -1;
   const sendOpen = arrowAt >= 0 ? code.indexOf('{', arrowAt) : -1;
 
-  if (metaStart < 0 || sendStart < 0 || arrowAt < 0 || sendOpen < 0) {
-    console.log('[IG_PAGE_TOKEN] sender positions not found', JSON.stringify({ metaStart, sendStart, arrowAt, sendOpen }));
+  if (sendStart < 0 || arrowAt < 0 || sendOpen < 0) {
+    console.log('[IG_PAGE_TOKEN] sender positions not found', JSON.stringify({ sendStart, arrowAt, sendOpen }));
     return;
   }
 
@@ -69,11 +68,11 @@ const resolveMetaPageToken=async(igAccountId)=>{
  }
  return cfg.meta;
 };
-const sendMeta=async(igAccountId,payload)=>{
+${code.slice(sendStart, sendOpen + 1)}
  const __metaToken=await resolveMetaPageToken(igAccountId);
  const metaHeaders={Authorization:'Bearer '+__metaToken,'Content-Type':'application/json'};`;
 
-  codeNode.parameters.jsCode = code.slice(0, metaStart) + replacement + code.slice(sendOpen + 1);
+  codeNode.parameters.jsCode = code.slice(0, sendStart) + replacement + code.slice(sendOpen + 1);
 
   await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`, {
     method: 'PUT',
