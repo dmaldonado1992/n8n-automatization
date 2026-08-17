@@ -31,11 +31,16 @@ const summarizeWorkflow=wf=>({
   }))
 });
 
-function latestDeliverySummary(execution){
+function deliveryOutput(execution){
   const runData=execution?.data?.resultData?.runData||{};
   const engineRuns=runData['Dynamic Notion Sales Engine']||[];
   const engine=engineRuns[engineRuns.length-1];
   const output=engine?.data?.main?.[0]?.[0]?.json||null;
+  return {engine,output};
+}
+
+function latestDeliverySummary(execution){
+  const {engine,output}=deliveryOutput(execution);
   return {
     id:execution?.id||null,
     status:execution?.status||null,
@@ -61,10 +66,12 @@ async function main(){
   const envKeys=Object.keys(process.env).filter(k=>/(META|INSTAGRAM|IG_)/i.test(k)).sort();
   console.log('[IG_DIAG] env_keys '+JSON.stringify(envKeys));
   try{
-    const ex=await n8n(`/executions?workflowId=${encodeURIComponent(WORKFLOW_ID)}&limit=10&includeData=true`);
+    const ex=await n8n(`/executions?workflowId=${encodeURIComponent(WORKFLOW_ID)}&limit=15&includeData=true`);
     const rows=ex.data||ex.results||ex;
     const arr=Array.isArray(rows)?rows:[];
     if(arr.length) console.log('[IG_DIAG] latest_delivery '+JSON.stringify(latestDeliverySummary(arr[0])));
+    const attempted=arr.find(e=>deliveryOutput(e).output?.delivery?.attempted===true);
+    if(attempted) console.log('[IG_DIAG] latest_attempted_delivery '+JSON.stringify(latestDeliverySummary(attempted)));
     console.log('[IG_DIAG] executions '+JSON.stringify(arr.map(e=>({id:e.id,status:e.status,finished:e.finished,startedAt:e.startedAt,stoppedAt:e.stoppedAt,mode:e.mode,waitTill:e.waitTill,data:safe(e.data)}))));
   }catch(e){console.log('[IG_DIAG] executions_error '+e.message);}
 }
