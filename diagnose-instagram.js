@@ -31,6 +31,25 @@ const summarizeWorkflow=wf=>({
   }))
 });
 
+function latestDeliverySummary(execution){
+  const runData=execution?.data?.resultData?.runData||{};
+  const engineRuns=runData['Dynamic Notion Sales Engine']||[];
+  const engine=engineRuns[engineRuns.length-1];
+  const output=engine?.data?.main?.[0]?.[0]?.json||null;
+  return {
+    id:execution?.id||null,
+    status:execution?.status||null,
+    finished:execution?.finished??null,
+    startedAt:execution?.startedAt||null,
+    engineStatus:engine?.executionStatus||null,
+    eventType:output?.eventType||null,
+    sender:output?.sender||null,
+    igAccountId:output?.igAccountId||null,
+    reply:typeof output?.reply==='string'?output.reply:null,
+    delivery:safe(output?.delivery??null)
+  };
+}
+
 async function main(){
   if(!N8N_URL||!N8N_API_KEY){console.log('[IG_DIAG] skipped: n8n config missing');return;}
   const [wf,verifyWf]=await Promise.all([
@@ -45,6 +64,7 @@ async function main(){
     const ex=await n8n(`/executions?workflowId=${encodeURIComponent(WORKFLOW_ID)}&limit=10&includeData=true`);
     const rows=ex.data||ex.results||ex;
     const arr=Array.isArray(rows)?rows:[];
+    if(arr.length) console.log('[IG_DIAG] latest_delivery '+JSON.stringify(latestDeliverySummary(arr[0])));
     console.log('[IG_DIAG] executions '+JSON.stringify(arr.map(e=>({id:e.id,status:e.status,finished:e.finished,startedAt:e.startedAt,stoppedAt:e.stoppedAt,mode:e.mode,waitTill:e.waitTill,data:safe(e.data)}))));
   }catch(e){console.log('[IG_DIAG] executions_error '+e.message);}
 }
