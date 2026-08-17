@@ -34,8 +34,8 @@ async function main() {
     return;
   }
 
-  const anchor = "const metaHeaders={Authorization:'Bearer '+cfg.meta,'Content-Type':'application/json'};\nconst sendMeta=async(igAccountId,payload)=>{";
-  if (!code.includes(anchor)) {
+  const anchor = /const\s+metaHeaders\s*=\s*\{\s*Authorization\s*:\s*'Bearer '\s*\+\s*cfg\.meta\s*,\s*'Content-Type'\s*:\s*'application\/json'\s*\}\s*;\s*const\s+sendMeta\s*=\s*async\s*\(\s*igAccountId\s*,\s*payload\s*\)\s*=>\s*\{/m;
+  if (!anchor.test(code)) {
     console.log('[IG_PAGE_TOKEN] anchor not found; leaving workflow unchanged');
     return;
   }
