@@ -28,15 +28,19 @@ async function main() {
   const codeNode = (workflow.nodes || []).find(node => node.name === 'Dynamic Notion Sales Engine');
   if (!codeNode?.parameters?.jsCode) throw new Error('Dynamic Notion Sales Engine code node not found');
 
-  let code = codeNode.parameters.jsCode;
+  const code = codeNode.parameters.jsCode;
   if (code.includes(MARKER)) {
     console.log('[IG_PAGE_TOKEN] page token resolver already installed');
     return;
   }
 
-  const anchor = /const\s+metaHeaders\s*=\s*\{\s*Authorization\s*:\s*'Bearer '\s*\+\s*cfg\.meta\s*,\s*'Content-Type'\s*:\s*'application\/json'\s*\}\s*;\s*const\s+sendMeta\s*=\s*async\s*\(\s*igAccountId\s*,\s*payload\s*\)\s*=>\s*\{/m;
-  if (!anchor.test(code)) {
-    console.log('[IG_PAGE_TOKEN] anchor not found; leaving workflow unchanged');
+  const metaStart = code.indexOf('const metaHeaders=');
+  const sendStart = code.indexOf('const sendMeta=', Math.max(0, metaStart));
+  const arrowAt = sendStart >= 0 ? code.indexOf('=>', sendStart) : -1;
+  const sendOpen = arrowAt >= 0 ? code.indexOf('{', arrowAt) : -1;
+
+  if (metaStart < 0 || sendStart < 0 || arrowAt < 0 || sendOpen < 0) {
+    console.log('[IG_PAGE_TOKEN] sender positions not found', JSON.stringify({ metaStart, sendStart, arrowAt, sendOpen }));
     return;
   }
 
@@ -69,7 +73,7 @@ const sendMeta=async(igAccountId,payload)=>{
  const __metaToken=await resolveMetaPageToken(igAccountId);
  const metaHeaders={Authorization:'Bearer '+__metaToken,'Content-Type':'application/json'};`;
 
-  codeNode.parameters.jsCode = code.replace(anchor, replacement);
+  codeNode.parameters.jsCode = code.slice(0, metaStart) + replacement + code.slice(sendOpen + 1);
 
   await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`, {
     method: 'PUT',
@@ -80,6 +84,12 @@ const sendMeta=async(igAccountId,payload)=>{
       settings: workflow.settings || {},
     }),
   });
+
+  try {
+    await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}/activate`, { method: 'POST' });
+  } catch (error) {
+    console.log('[IG_PAGE_TOKEN] activate after update non-fatal', String(error?.message || error));
+  }
 
   console.log(`[IG_PAGE_TOKEN] resolver installed on workflow ${WORKFLOW_ID}`);
 }
