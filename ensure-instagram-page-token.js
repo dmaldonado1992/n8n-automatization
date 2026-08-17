@@ -18,6 +18,51 @@ async function n8n(path, options = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+async function saveAndActivate(workflow) {
+  await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: workflow.name,
+      nodes: workflow.nodes,
+      connections: workflow.connections,
+      settings: workflow.settings || {},
+    }),
+  });
+
+  try {
+    await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}/activate`, { method: 'POST' });
+  } catch (error) {
+    console.log('[IG_PAGE_TOKEN] activate after update non-fatal', String(error?.message || error));
+  }
+}
+
+function repairInstalledResolver(code) {
+  let next = code;
+  const changes = [];
+
+  // Engine V3 renamed the logger helpers. Old injected resolver references crash at runtime.
+  if (next.includes('/* INSTAGRAM_SALES_ENGINE_V3_TIMEOUT_SAFE */') || next.includes('const log=')) {
+    if (next.includes('__igLog(')) {
+      next = next.replaceAll('__igLog(', 'log(');
+      changes.push('logger');
+    }
+    if (next.includes('__igError(')) {
+      next = next.replaceAll('__igError(', 'errInfo(');
+      changes.push('error-helper');
+    }
+  }
+
+  // The sender resolves a Page token into metaHeaders; the Graph POST must actually use it.
+  const wrongHeaders = "headers:{Authorization:'Bearer '+cfg.meta,'Content-Type':'application/json'},body:payload";
+  const correctHeaders = 'headers:metaHeaders,body:payload';
+  if (next.includes(wrongHeaders)) {
+    next = next.replaceAll(wrongHeaders, correctHeaders);
+    changes.push('send-headers');
+  }
+
+  return { code: next, changes };
+}
+
 async function main() {
   if (!N8N_URL || !N8N_API_KEY) {
     console.log('[IG_PAGE_TOKEN] skipped: N8N_URL/N8N_API_KEY not configured');
@@ -28,9 +73,18 @@ async function main() {
   const codeNode = (workflow.nodes || []).find(node => node.name === 'Dynamic Notion Sales Engine');
   if (!codeNode?.parameters?.jsCode) throw new Error('Dynamic Notion Sales Engine code node not found');
 
-  const code = codeNode.parameters.jsCode;
+  let code = codeNode.parameters.jsCode;
+
   if (code.includes(MARKER)) {
-    console.log('[IG_PAGE_TOKEN] page token resolver already installed');
+    const repaired = repairInstalledResolver(code);
+    if (!repaired.changes.length) {
+      console.log('[IG_PAGE_TOKEN] page token resolver already installed and healthy');
+      return;
+    }
+
+    codeNode.parameters.jsCode = repaired.code;
+    await saveAndActivate(workflow);
+    console.log('[IG_PAGE_TOKEN] stale resolver repaired', JSON.stringify({ workflowId: WORKFLOW_ID, changes: repaired.changes }));
     return;
   }
 
@@ -42,6 +96,10 @@ async function main() {
     console.log('[IG_PAGE_TOKEN] sender positions not found', JSON.stringify({ sendStart, arrowAt, sendOpen }));
     return;
   }
+
+  const usesV3Helpers = code.includes('/* INSTAGRAM_SALES_ENGINE_V3_TIMEOUT_SAFE */') || code.includes('const log=');
+  const logFn = usesV3Helpers ? 'log' : '__igLog';
+  const errorFn = usesV3Helpers ? 'errInfo' : '__igError';
 
   const replacement = `${MARKER}
 const __metaPageTokenCache={};
@@ -59,12 +117,12 @@ const resolveMetaPageToken=async(igAccountId)=>{
   const page=(accounts.data||[]).find(p=>String(p.instagram_business_account?.id||'')===key);
   if(page?.access_token){
    __metaPageTokenCache[key]=page.access_token;
-   __igLog('META_PAGE_TOKEN_RESOLVED',{igAccountId:key,pageId:String(page.id||''),pageName:page.name||null,username:page.instagram_business_account?.username||null});
+   ${logFn}('META_PAGE_TOKEN_RESOLVED',{igAccountId:key,pageId:String(page.id||''),pageName:page.name||null,username:page.instagram_business_account?.username||null});
    return page.access_token;
   }
-  __igLog('META_PAGE_TOKEN_NOT_FOUND',{igAccountId:key,managedPages:(accounts.data||[]).map(p=>({pageId:String(p.id||''),pageName:p.name||null,igAccountId:String(p.instagram_business_account?.id||''),username:p.instagram_business_account?.username||null}))});
+  ${logFn}('META_PAGE_TOKEN_NOT_FOUND',{igAccountId:key,managedPages:(accounts.data||[]).map(p=>({pageId:String(p.id||''),pageName:p.name||null,igAccountId:String(p.instagram_business_account?.id||''),username:p.instagram_business_account?.username||null}))});
  }catch(error){
-  __igLog('META_PAGE_TOKEN_FAILURE',{igAccountId:key,error:__igError(error)});
+  ${logFn}('META_PAGE_TOKEN_FAILURE',{igAccountId:key,error:${errorFn}(error)});
  }
  return cfg.meta;
 };
@@ -72,24 +130,10 @@ ${code.slice(sendStart, sendOpen + 1)}
  const __metaToken=await resolveMetaPageToken(igAccountId);
  const metaHeaders={Authorization:'Bearer '+__metaToken,'Content-Type':'application/json'};`;
 
-  codeNode.parameters.jsCode = code.slice(0, sendStart) + replacement + code.slice(sendOpen + 1);
+  code = code.slice(0, sendStart) + replacement + code.slice(sendOpen + 1);
+  codeNode.parameters.jsCode = repairInstalledResolver(code).code;
 
-  await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      name: workflow.name,
-      nodes: workflow.nodes,
-      connections: workflow.connections,
-      settings: workflow.settings || {},
-    }),
-  });
-
-  try {
-    await n8n(`/workflows/${encodeURIComponent(WORKFLOW_ID)}/activate`, { method: 'POST' });
-  } catch (error) {
-    console.log('[IG_PAGE_TOKEN] activate after update non-fatal', String(error?.message || error));
-  }
-
+  await saveAndActivate(workflow);
   console.log(`[IG_PAGE_TOKEN] resolver installed on workflow ${WORKFLOW_ID}`);
 }
 
