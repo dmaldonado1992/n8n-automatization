@@ -36,14 +36,7 @@ async function main(){
     'territorial databases config'
   );
 
-  const paymentAnchor=String.raw`const __paymentChoice=input=>{
-  const n=__normProduct(input);
-  if(/^(efectivo|cash|contra entrega|pago en efectivo)$/.test(n)||/\befectivo\b|\bcash\b|\bcontra entrega\b/.test(n)) return 'Efectivo';
-  if(/^(transferencia|transferir|transferencia bancaria|transferencia electronica)$/.test(n)||/\btransferencia\b|\btransferir\b/.test(n)) return 'Transferencia';
-  return '';
-};`;
-  const helpers=String.raw`${paymentAnchor}
-${MARKER}
+  const helpers=String.raw`${MARKER}
 const __cancelIntent=(input,current)=>{
   const n=__normProduct(input);
   if(/^(cancelar|cancela|cancelar pedido|cancela pedido|ya no|ya no quiero|ya no gracias|mejor no|dejalo|dejalo asi)$/.test(n)) return true;
@@ -101,7 +94,7 @@ const __stepPrompt=async(step,sessionLike)=>{
   }
   return step.message;
 };`;
-  code=mustReplace(code,paymentAnchor,helpers,'coverage helpers');
+  code=mustReplace(code,"const getProducts=async()=>{",helpers+"\nconst getProducts=async()=>{",'coverage helpers');
 
   const activeContext=String.raw`    const exactReferenced=referencedProduct&&__normProduct(text)===referencedProduct.normalizedName;
     const changeRequested=referencedProduct&&activeProduct&&referencedProduct.id!==activeProduct.id&&(__wantsProductChange(text)||exactReferenced||/^quiero\b/.test(__normProduct(text)));
