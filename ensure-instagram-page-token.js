@@ -52,6 +52,46 @@ function repairInstalledResolver(code) {
     }
   }
 
+  // Logging must never recurse forever on circular/proxy error objects returned by vm2/httpRequest.
+  const unsafeRedactor = `const redact=(value)=>{
+  if(value===null||value===undefined)return value;
+  if(Array.isArray(value))return value.map(redact);
+  if(typeof value!=='object')return value;
+  const out={};
+  for(const [k,v] of Object.entries(value)) out[k]=/(authorization|cookie|access[_-]?token|secret|api[_-]?key)/i.test(k)?'[REDACTED]':redact(v);
+  return out;
+};`;
+
+  const safeRedactor = `/* INSTAGRAM_SAFE_REDACT_V1 */
+const redact=(value,depth=0,seen)=>{
+  if(value===null||value===undefined)return value;
+  if(depth>6)return '[DEPTH_LIMIT]';
+  const t=typeof value;
+  if(t!=='object'){
+    if(t==='bigint')return String(value);
+    if(t==='function')return '[FUNCTION]';
+    return value;
+  }
+  const refs=seen||new WeakSet();
+  try{
+    if(refs.has(value))return '[CIRCULAR]';
+    refs.add(value);
+    if(Array.isArray(value))return value.slice(0,50).map(v=>redact(v,depth+1,refs));
+    const out={};
+    for(const [k,v] of Object.entries(value).slice(0,100)){
+      out[k]=/(authorization|cookie|access[_-]?token|secret|api[_-]?key)/i.test(k)?'[REDACTED]':redact(v,depth+1,refs);
+    }
+    return out;
+  }catch{
+    return '[UNSERIALIZABLE]';
+  }
+};`;
+
+  if (next.includes(unsafeRedactor)) {
+    next = next.replace(unsafeRedactor, safeRedactor);
+    changes.push('safe-redactor');
+  }
+
   // The sender resolves a Page token into metaHeaders; the Graph POST must actually use it.
   const wrongHeaders = "headers:{Authorization:'Bearer '+cfg.meta,'Content-Type':'application/json'},body:payload";
   const correctHeaders = 'headers:metaHeaders,body:payload';
