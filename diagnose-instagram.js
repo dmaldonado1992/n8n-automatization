@@ -96,3 +96,4 @@ async function main(){
   }catch(e){console.log('[IG_DIAG] executions_error '+e.message);}
 }
 main().catch(e=>{console.error('[IG_DIAG] failed: '+e.message);});
+// refresh 2026-08-17 receipt upload failure
