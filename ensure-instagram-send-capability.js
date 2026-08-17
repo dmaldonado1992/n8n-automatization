@@ -1,7 +1,7 @@
 const N8N_URL=(process.env.N8N_URL||'').replace(/\/$/,'');
 const N8N_API_KEY=process.env.N8N_API_KEY||'';
 const WORKFLOW_ID=process.env.INSTAGRAM_SALES_WORKFLOW_ID||'6l5IbTxGdwcL24wT';
-const MARKER='/* INSTAGRAM_FACEBOOK_LOGIN_SEND_V4 */';
+const MARKER='/* INSTAGRAM_PAGE_SEND_V5 */';
 
 async function n8n(path,options={}){
   const r=await fetch(`${N8N_URL}/api/v1${path}`,{
@@ -58,17 +58,17 @@ async function main(){
   const node=(wf.nodes||[]).find(n=>n.name==='Dynamic Notion Sales Engine');
   if(!node?.parameters?.jsCode) throw new Error('Dynamic Notion Sales Engine not found');
   let code=node.parameters.jsCode;
-  if(code.includes(MARKER)){console.log('[IG_SEND_CAPABILITY] Facebook Login Instagram sender already installed');return;}
+  if(code.includes(MARKER)){console.log('[IG_SEND_CAPABILITY] working Page sender already installed');return;}
 
   const block=findFunctionBlock(code,'const sendMeta=async(igAccountId,payload)=>');
   if(!block) throw new Error('sendMeta function not found');
 
-  const replacement=`${MARKER}\nconst sendMeta=async(igAccountId,payload)=>{\n  const ctx=await resolveMetaPageContext(igAccountId);\n  const pageToken=ctx?.token||'';\n  const url='https://graph.facebook.com/v26.0/'+encodeURIComponent(igAccountId)+'/messages';\n  delivery={attempted:true,ok:null,route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',payload:redact(payload)};\n  if(!pageToken){\n    delivery={attempted:true,ok:false,route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',error:{message:'Unable to resolve Facebook Page access token',code:'MISSING_PAGE_TOKEN'}};\n    log('META_SEND_TOKEN_MISSING',{route:'facebook-login-instagram',igAccountId,pageId:ctx?.pageId||''});\n    return null;\n  }\n  const metaHeaders={Authorization:'Bearer '+pageToken,'Content-Type':'application/json'};\n  log('META_SEND_ATTEMPT',{route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',payload});\n  try{\n    const response=await this.helpers.httpRequest({method:'POST',url,headers:metaHeaders,body:payload,json:true,timeout:HTTP_TIMEOUT});\n    delivery={attempted:true,ok:true,route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',response:redact(response)};\n    log('META_SEND_SUCCESS',{route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',response});\n    return response;\n  }catch(e){\n    const detail=errInfo(e);\n    delivery={attempted:true,ok:false,route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',error:detail};\n    log('META_SEND_FAILURE',{route:'facebook-login-instagram',url,igAccountId,pageId:ctx?.pageId||'',error:detail});\n    return null;\n  }\n};`;
+  const replacement=`${MARKER}\nconst sendMeta=async(igAccountId,payload)=>{\n  const ctx=await resolveMetaPageContext(igAccountId);\n  const pageId=String(ctx?.pageId||'');\n  const pageToken=ctx?.token||'';\n  const url=pageId?'https://graph.facebook.com/v26.0/'+encodeURIComponent(pageId)+'/messages':'';\n  const body=(payload?.recipient?.id&&!payload.messaging_type)?{...payload,messaging_type:'RESPONSE'}:payload;\n  delivery={attempted:true,ok:null,route:'page',url,igAccountId,pageId,payload:redact(body)};\n  if(!pageId||!pageToken){\n    delivery={attempted:true,ok:false,route:'page',url,igAccountId,pageId,error:{message:'Unable to resolve Facebook Page ID/access token',code:'MISSING_PAGE_CONTEXT'}};\n    log('META_SEND_TOKEN_MISSING',{route:'page',igAccountId,pageId});\n    return null;\n  }\n  const metaHeaders={Authorization:'Bearer '+pageToken,'Content-Type':'application/json'};\n  log('META_SEND_ATTEMPT',{route:'page',url,igAccountId,pageId,payload:body});\n  try{\n    const response=await this.helpers.httpRequest({method:'POST',url,headers:metaHeaders,body,json:true,timeout:HTTP_TIMEOUT});\n    delivery={attempted:true,ok:true,route:'page',url,igAccountId,pageId,response:redact(response)};\n    log('META_SEND_SUCCESS',{route:'page',url,igAccountId,pageId,response});\n    return response;\n  }catch(e){\n    const detail=errInfo(e);\n    delivery={attempted:true,ok:false,route:'page',url,igAccountId,pageId,error:detail};\n    log('META_SEND_FAILURE',{route:'page',url,igAccountId,pageId,error:detail});\n    return null;\n  }\n};`;
 
   code=code.slice(0,block.start)+replacement+code.slice(block.end);
   node.parameters.jsCode=code;
   await saveAndActivate(wf);
-  console.log('[IG_SEND_CAPABILITY] Facebook Login Instagram sender installed '+JSON.stringify({workflowId:WORKFLOW_ID}));
+  console.log('[IG_SEND_CAPABILITY] working Page sender installed '+JSON.stringify({workflowId:WORKFLOW_ID}));
 }
 
 main().catch(e=>{console.error('[IG_SEND_CAPABILITY] non-fatal failure: '+String(e?.message||e));});
