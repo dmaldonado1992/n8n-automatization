@@ -23,7 +23,7 @@ const TOOL_NAMES = [
   'list_projects','get_project','create_project','update_project','delete_project','move_workflow_to_project',
   'list_executions','get_execution','delete_execution','retry_execution',
   'list_tags','get_tag','create_tag','update_tag','delete_tag',
-  'execute_english_learning_sync'
+  'execute_english_learning_sync','configure_job_cv_gemini'
 ];
 
 const sessions = new Map();
@@ -95,6 +95,50 @@ async function n8nWebhook(path, payload = {}) {
   } finally { clearTimeout(timeout); }
 }
 
+
+const JOB_CV_GEMINI_DEFAULT_MODELS = ['gemini-3-flash-preview','gemini-2.5-flash','gemini-2.5-flash-lite'];
+
+function sanitizeWorkflowForUpdate(workflow) {
+  return { name: workflow.name, nodes: workflow.nodes, connections: workflow.connections, settings: workflow.settings || {} };
+}
+
+function configureJobCvGeminiWorkflow(workflow, requestedModels = []) {
+  const models = [...requestedModels, ...JOB_CV_GEMINI_DEFAULT_MODELS].map(value => String(value || '').trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).slice(0, 3);
+  if (models.length !== 3) throw new Error('Exactly three Gemini fallback models are required');
+  const promptNode = workflow.nodes.find(node => node.name === 'Build Truthful Adaptation Prompt');
+  if (!promptNode) throw new Error('Prompt builder node was not found');
+  const obsoleteNodeNames = new Set(['Generar contenido de CV','Gemini CV 1','Gemini CV OK 1','Gemini CV 2','Gemini CV OK 2','Gemini CV 3','Gemini CV OK 3','Normalize Gemini CV','Gemini CV Failed']);
+  const baseNodes = workflow.nodes.filter(node => !obsoleteNodeNames.has(node.name));
+  const baseConnections = Object.fromEntries(Object.entries(workflow.connections || {}).filter(([name]) => !obsoleteNodeNames.has(name)));
+  const httpNode = (index, model, x) => ({
+    parameters: {
+      method: 'POST', url: 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent',
+      sendQuery: true, queryParameters: { parameters: [{ name: 'key', value: '={{ $env.GEMINI_API_KEY || $env.GOOGLE_API_KEY || $env.GOOGLE_GEMINI_API_KEY }}' }] },
+      sendHeaders: true, headerParameters: { parameters: [{ name: 'Accept', value: 'application/json' }] },
+      sendBody: true, contentType: 'raw', rawContentType: 'application/json',
+      body: "={{ JSON.stringify({ contents: [{ role: 'user', parts: [{ text: $('Build Truthful Adaptation Prompt').item.json.prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }) }}",
+      options: { response: { response: { fullResponse: true, neverError: true } }, timeout: 60000 }
+    },
+    id: randomUUID(), name: 'Gemini CV ' + index, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position: [x, 0]
+  });
+  const ifNode = (index, x) => ({
+    parameters: { conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 }, conditions: [{ id: randomUUID(), leftValue: '={{ $json.statusCode }}', rightValue: 200, operator: { type: 'number', operation: 'equals' } }], combinator: 'and' }, options: {} },
+    id: randomUUID(), name: 'Gemini CV OK ' + index, type: 'n8n-nodes-base.if', typeVersion: 2.2, position: [x, 0]
+  });
+  const normalize = { parameters: { jsCode: "const response=$json.body??$json;const text=response?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';if(!text) throw new Error('Gemini returned no text');return [{json:{output_text:text,provider:'google-gemini',modelUsed:response.modelVersion||null}}];" }, id: randomUUID(), name: 'Normalize Gemini CV', type: 'n8n-nodes-base.code', typeVersion: 2, position: [1440, -180] };
+  const failed = { parameters: { jsCode: "const detail=$json.body?.error?.message||$json.statusMessage||'All Gemini models failed';throw new Error(detail);" }, id: randomUUID(), name: 'Gemini CV Failed', type: 'n8n-nodes-base.code', typeVersion: 2, position: [1440, 220] };
+  const generated = [];
+  models.forEach((model, i) => { generated.push(httpNode(i + 1, model, 480 + i * 320)); generated.push(ifNode(i + 1, 640 + i * 320)); });
+  baseConnections[promptNode.name] = { main: [[{ node: 'Gemini CV 1', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV 1'] = { main: [[{ node: 'Gemini CV OK 1', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV OK 1'] = { main: [[{ node: 'Normalize Gemini CV', type: 'main', index: 0 }],[{ node: 'Gemini CV 2', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV 2'] = { main: [[{ node: 'Gemini CV OK 2', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV OK 2'] = { main: [[{ node: 'Normalize Gemini CV', type: 'main', index: 0 }],[{ node: 'Gemini CV 3', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV 3'] = { main: [[{ node: 'Gemini CV OK 3', type: 'main', index: 0 }]] };
+  baseConnections['Gemini CV OK 3'] = { main: [[{ node: 'Normalize Gemini CV', type: 'main', index: 0 }],[{ node: 'Gemini CV Failed', type: 'main', index: 0 }]] };
+  return { update: sanitizeWorkflowForUpdate({ ...workflow, nodes: [...baseNodes, ...generated, normalize, failed], connections: baseConnections }), models };
+}
+
 function createServer() {
   const server = new McpServer({ name: 'n8n-mcp', version: '1.4.0' });
 
@@ -103,6 +147,7 @@ function createServer() {
   server.tool('get_workflow','Get workflow by ID',{id:z.string()},async({id})=>output(await n8n(`/workflows/${encodeURIComponent(id)}`)));
   server.tool('create_workflow','Create workflow',{workflow:z.record(z.any())},async({workflow})=>output(await n8n('/workflows',{method:'POST',body:JSON.stringify(workflow)})));
   server.tool('update_workflow','Update workflow',{id:z.string(),workflow:z.record(z.any())},async({id,workflow})=>output(await n8n(`/workflows/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify(workflow)})));
+  server.tool('configure_job_cv_gemini','Replace the OpenAI CV generator with a three-model Gemini fallback chain.',{id:z.string(),models:z.array(z.string().min(1)).min(1).max(3).optional()},async({id,models})=>{const current=await n8n(`/workflows/${encodeURIComponent(id)}`);const configured=configureJobCvGeminiWorkflow(current,models||[]);const saved=await n8n(`/workflows/${encodeURIComponent(id)}`,{method:'PUT',body:JSON.stringify(configured.update)});return output({ok:true,id:saved.id||id,name:saved.name||current.name,models:configured.models});});
   server.tool('delete_workflow','Delete workflow',{id:z.string()},async({id})=>output(await n8n(`/workflows/${encodeURIComponent(id)}`,{method:'DELETE'})));
   server.tool('activate_workflow','Activate workflow',{id:z.string()},async({id})=>output(await n8n(`/workflows/${encodeURIComponent(id)}/activate`,{method:'POST'})));
   server.tool('deactivate_workflow','Deactivate workflow',{id:z.string()},async({id})=>output(await n8n(`/workflows/${encodeURIComponent(id)}/deactivate`,{method:'POST'})));
