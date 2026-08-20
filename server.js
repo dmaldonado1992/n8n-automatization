@@ -193,6 +193,16 @@ app.get('/ready',async(_req,res)=>{if(!N8N_URL||!N8N_API_KEY)return res.status(5
 app.use((error,_req,res,next)=>{if(error instanceof SyntaxError&&'body'in error)return res.status(400).json({error:'Invalid JSON body'});return next(error);});
 
 const cleanupTimer=setInterval(async()=>{if(!MCP_STATEFUL)return;const now=Date.now();for(const[sessionId,session]of sessions.entries()){if(now-session.lastSeen>MCP_SESSION_TTL_MS){sessions.delete(sessionId);try{await session.transport.close();}catch{}try{await session.server.close();}catch{}}}},Math.min(Math.max(60000,Math.floor(MCP_SESSION_TTL_MS/2)),300000));cleanupTimer.unref();
-const port=Number(process.env.PORT||10000);const httpServer=app.listen(port,'0.0.0.0',()=>{console.log(`n8n MCP listening on ${port} in ${MCP_STATEFUL?'stateful':'stateless'} mode`);console.log(`MCP tools: ${TOOL_NAMES.join(', ')}`);});
+async function applyJobCvGeminiOnce(){
+  const id='3oZKJ4wjCmQhWdmB';
+  try{
+    const current=await n8n('/workflows/'+encodeURIComponent(id));
+    if(!current.nodes?.some(node=>node.name==='Generar contenido de CV')){console.log('Gemini CV bootstrap: already configured');return;}
+    const configured=configureJobCvGeminiWorkflow(current,['gemini-3-flash-preview','gemini-flash-latest','gemini-2.5-flash-lite']);
+    await n8n('/workflows/'+encodeURIComponent(id),{method:'PUT',body:JSON.stringify(configured.update)});
+    console.log('Gemini CV bootstrap applied:',configured.models.join(', '));
+  }catch(error){console.error('Gemini CV bootstrap failed:',String(error?.message||error));}
+}
+const port=Number(process.env.PORT||10000);const httpServer=app.listen(port,'0.0.0.0',()=>{console.log(`n8n MCP listening on ${port} in ${MCP_STATEFUL?'stateful':'stateless'} mode`);console.log(`MCP tools: ${TOOL_NAMES.join(', ')}`);void applyJobCvGeminiOnce();});
 async function shutdown(signal){console.log(`${signal} received; closing MCP cleanly`);clearInterval(cleanupTimer);for(const[sessionId,session]of sessions.entries()){sessions.delete(sessionId);try{await session.transport.close();}catch{}try{await session.server.close();}catch{}}httpServer.close(()=>process.exit(0));setTimeout(()=>process.exit(0),5000).unref();}
 process.once('SIGTERM',()=>shutdown('SIGTERM'));process.once('SIGINT',()=>shutdown('SIGINT'));
